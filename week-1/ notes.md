@@ -26,8 +26,10 @@ Other notes:
   - `docker container prune` to remove stopped containers.
   - `docker volume prune` to remove unused volumes.
 
-## Postgres (in Docker)
+---
 
+## Postgres (in Docker)
+### Spinning up Postgres in Docker
 In this video the instructor adapted a section of a docker compose file to a docker command. I decided to turn it into a docker file to practice further.
 
 **Docker Compose (Original Source)**
@@ -89,11 +91,13 @@ Which is understandable since we do not want to commit this dockerfile to a repo
 To run the Postgres container using the Dockerfile, you would still need to map the volume and port as shown in the docker command equivalent:
 ```bash
 docker run -it \
-  --name postgresql_taxi
+  --name pg-db-taxi
   -v $(pwd)/ny_taxi_postgres_data:/var/lib/postgresql/data \
   -p 5432:5432 \
   postgres:taxi
 ```
+
+**NOTE: I gave the container a name so it could be reused. To start the container next time use `docker start -ia <container_name>` (`-i` interactive, `-a` attach terminal to container) or else you will get an error saying the name is already in use. To spin up a temporary container use the `--rm` flag on `docker run` which will automatically remove the container when it exits. You do not need to re-specify the volume, portnumbers, env variables, etc. when you start the container by name again since it is saved during the creation the first time.**
 
 Then using pgcli we connect to our posgres container with:
 ```bash
@@ -212,7 +216,7 @@ The instructor noted that it would take a long time to load the data to the data
 - [Polars](https://pola.rs/): A fast dataframe library written in Rust that has better performance than pandas for certain operations.
 - [Dask](https://dask.org/): A flexible parallel computing library for analytics that integrates with pandas and NumPy.
 - [dlt](https://dlthub.com/docs/intro): A data loading tool that simplifies the process of loading data into databases.
-- copy - a built-in command to load data into a table
+- `\copy` - a built-in command to load data into a table
 
 So I tried using polars to load the data:
 ```python
@@ -245,5 +249,69 @@ Using dlt will have to wait for another day.
 
 Using copy (after using the schema from pandas) took **8 seconds**:
 ```sql
-\copy ny_taxi_copy from '~/data/yellow_tripdata_2021-01.csv' with (format csv, header true);
+\copy ny_taxi from '~/data/yellow_tripdata_2021-01.csv' with (format csv, header true);
 ```
+
+---
+
+## pgAdmin
+If we run pgAdmin in a container, we cannot connect to our other postgres container when we specify `localhost` as our address, because it tries to look for an instance of postgres running inside of the pgAdmin.
+
+To solve this we need to create a network so that both containers can communicate.
+`docker network create pg-network`
+
+Spin up our postgres container with the network we just created:
+```bash
+docker run -it \
+  -e POSTGRES_USER="root" \
+  -e POSTGRES_PASSWORD="root" \
+  -e POSTGRES_DB="ny_taxi" \
+  -v $(pwd)/ny_taxi_postgres_data:/var/lib/postgresql/data \
+  -p 5432:5432 \
+  --network=pg-network \
+  --name pg-db-taxi \
+  postgres:13
+```
+
+Then run pgadmin in the same docker network:
+```bash
+docker run -it \
+  -e PGADMIN_DEFAULT_EMAIL="admin@admin.com" \
+  -e PGADMIN_DEFAULT_PASSWORD="root" \
+  -p 8080:80 \
+  --network=pg-network \
+  --name pgadmin \
+  dpage/pgadmin4
+```
+
+Login with the credentials specified, then right click on _servers_ then _register>Server..._ and fill out the information for our pg database.
+
+---
+
+## Dockerizing the Ingestion Script
+
+For this section I attempted to create a dlt pipeline since it seemed more robust and reliable than a script.
+
+I followed the instructions in the [filesystem usage docs](https://dlthub.com/docs/dlt-ecosystem/verified-sources/filesystem/basic#3-create-and-run-a-pipeline).
+
+I had issues before, when I ran `\dt` in pgcli it wouldn't show any new tables. So this time, I ran the pipeline with the env variable `PROGRESS=englighten` to see what was going on.
+
+Although it said it completed and loaded the data, `\dt` still showed no tables. This is because `\dt` only displays tables that are visible in the current `search_path`, which by default is "$user", and "public". Since our tables are inside a different schema, we need to either add it to our `search_path` (`SET search_path TO schema_name, public;`) or pass it to the command like `\dt my_schema.*`
+
+In my case:
+```
+root@localhost:ny_taxi> \dt ny_taxi_dataset.*
++-----------------+---------------------+-------+-------+
+| Schema          | Name                | Type  | Owner |
+|-----------------+---------------------+-------+-------|
+| ny_taxi_dataset | _dlt_loads          | table | root  |
+| ny_taxi_dataset | _dlt_pipeline_state | table | root  |
+| ny_taxi_dataset | _dlt_version        | table | root  |
+| ny_taxi_dataset | yellow_taxi_data    | table | root  |
++-----------------+---------------------+-------+-------+
+SELECT 4
+Time: 0.005s
+```
+
+But changing `dataset_name` to "public" will use the public schema. Although it is probably better to not do that since it is easier to drop the whole schema to start over.
+

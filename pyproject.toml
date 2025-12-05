@@ -5,6 +5,9 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
+    "dlt[filesystem,postgres]>=1.19.1",
     "polars[gpu,sqlalchemy]>=1.32.3",
     "psycopg2>=2.9.11",
 ]
+[tool.ty.environment]
+python = "./.venv"
